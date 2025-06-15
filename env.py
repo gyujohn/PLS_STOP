@@ -27,46 +27,96 @@ class MultiAgentChaseEnv(gym.Env):
 
         self.reset()
 
+
+    
     def reset(self):
-        self.grid = np.zeros((self.k, self.k))
-        self.walls = np.zeros((self.k, self.k))
-        self.points = np.zeros((self.k, self.k))
-        self.player_pos = None
-        self.bot_positions = []
         self.steps_taken = 0
+        self.bot_positions = []
+        self.points = np.zeros((self.k, self.k))
+        self.walls = np.ones((self.k, self.k), dtype=int)  # Start fully walled
 
-        # Place walls
-        n_walls = random.randint(1, self.k)
-        for _ in range(n_walls):
-            x, y = random.randint(0, self.k-1), random.randint(0, self.k-1)
-            self.walls[x, y] = 1
+        # Generate maze using randomized DFS
+        self._generate_maze()
 
-        # Place points
-        n_points = random.randint(1, self.k)
-        for _ in range(n_points):
-            while True:
-                x, y = random.randint(0, self.k-1), random.randint(0, self.k-1)
-                if self.walls[x, y] == 0:
-                    self.points[x, y] = 1
-                    break
+        # Place player on a random empty cell
+        empty_cells = list(zip(*np.where(self.walls == 0)))
+        self.player_pos = random.choice(empty_cells)
 
-        # Place player
-        while True:
-            x, y = random.randint(0, self.k-1), random.randint(0, self.k-1)
-            if self.walls[x, y] == 0 and self.points[x, y] == 0:
-                self.player_pos = (x, y)
-                break
+        # Place bots on empty cells reachable from player
+        reachable = self._bfs_reachable(self.player_pos)
+        reachable_cells = [cell for cell in empty_cells if cell in reachable and cell != self.player_pos]
 
-        # Place bots
-        for _ in range(self.n_bots):
-            while True:
-                x, y = random.randint(0, self.k-1), random.randint(0, self.k-1)
-                if (x, y) != self.player_pos and self.walls[x, y] == 0 and self.points[x, y] == 0:
-                    self.bot_positions.append((x, y))
-                    break
+        if len(reachable_cells) < self.n_bots:
+            raise RuntimeError("Not enough reachable cells to place bots")
+
+        self.bot_positions = random.sample(reachable_cells, self.n_bots)
+
+        # Place points on reachable empty cells not occupied by player or bots
+        available_cells = [cell for cell in reachable if cell != self.player_pos and cell not in self.bot_positions]
+        n_points = random.randint(1, min(len(available_cells), self.k))
+        points_cells = random.sample(available_cells, n_points)
+        for x, y in points_cells:
+            self.points[x, y] = 1
 
         return self._get_obs_for_agents()
 
+    def _generate_maze(self):
+        """
+        Generate maze using randomized DFS.
+        Walls = 1, paths = 0.
+        Maze size self.k x self.k.
+        For simplicity, assume odd dimensions for proper maze carving.
+        """
+        # Initialize all cells as walls
+        self.walls.fill(1)
+
+        # Start DFS from a random odd cell
+        start_x = random.randrange(1, self.k, 2)
+        start_y = random.randrange(1, self.k, 2)
+        self.walls[start_x, start_y] = 0
+
+        stack = [(start_x, start_y)]
+        directions = [(2,0), (-2,0), (0,2), (0,-2)]
+
+        while stack:
+            x, y = stack[-1]
+            neighbors = []
+            for dx, dy in directions:
+                nx, ny = x + dx, y + dy
+                if 1 <= nx < self.k-1 and 1 <= ny < self.k-1:
+                    if self.walls[nx, ny] == 1:
+                        neighbors.append((nx, ny))
+            if neighbors:
+                nx, ny = random.choice(neighbors)
+                # Remove wall between current and neighbor
+                wx, wy = (x + nx)//2, (y + ny)//2
+                self.walls[wx, wy] = 0
+                self.walls[nx, ny] = 0
+                stack.append((nx, ny))
+            else:
+                stack.pop()
+
+    def _bfs_reachable(self, start):
+        """
+        Return set of reachable cells from start using BFS on free cells (walls=0).
+        """
+        visited = set()
+        queue = deque([start])
+        visited.add(start)
+
+        while queue:
+            x, y = queue.popleft()
+            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nx, ny = x+dx, y+dy
+                if 0 <= nx < self.k and 0 <= ny < self.k:
+                    if self.walls[nx, ny] == 0 and (nx, ny) not in visited:
+                        visited.add((nx, ny))
+                        queue.append((nx, ny))
+        return visited
+
+
+
+    
     def _get_obs_for_agent(self, agent_idx, agent_pos):
         # agent_idx: 0=player, 1..n_bots=bots
         # agent_pos: (x, y) position of the agent
